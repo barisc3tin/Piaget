@@ -19,21 +19,18 @@ last_greet_time = 0.0
 greet_index = 0
 
 def play_greet(index):
-    """Belirtilen indexteki wav dosyasını çal (non-blocking)."""
     if index < 0 or index >= len(AUDIO_FILES):
         return
     filename = AUDIO_FILES[index]
     try:
-        # aplay ile çal, stdout/stderr'i sustur
         subprocess.Popen(
-            ["aplay", filename],
+            ["pw-play", filename],
             stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
         )
-        print(f"Playing: {filename}")
+        print(f"Playing (BT via PipeWire): {filename}")
     except Exception as e:
         print("Audio play error:", e)
-
 # ---------- CASCADE PATH ----------
 CASCADE_PATH = "/usr/share/opencv4/haarcascades/haarcascade_frontalface_default.xml"
 # Gerekirse kendi yolunla değiştir:
