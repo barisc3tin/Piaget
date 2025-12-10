@@ -2,14 +2,37 @@ import cv2
 import time
 from collections import deque
 from adafruit_servokit import ServoKit
+import subprocess  # <-- audio için
 
 # ---------- CAMERA SETTINGS ----------
 CAM_INDEX = 0
-WIDTH = 640
-HEIGHT = 480
+WIDTH = 320
+HEIGHT = 240
 
 # Detection için küçültme oranı
-DOWNSCALE = 0.75
+DOWNSCALE = 1
+
+# ---------- AUDIO SETTINGS ----------
+AUDIO_FILES = ["piaget_0.wav", "piaget_1.wav", "piaget_2.wav"]
+GREET_COOLDOWN = 5.0  # aynı kişiyi sürekli görünce spam yapmasın (saniye)
+last_greet_time = 0.0
+greet_index = 0
+
+def play_greet(index):
+    """Belirtilen indexteki wav dosyasını çal (non-blocking)."""
+    if index < 0 or index >= len(AUDIO_FILES):
+        return
+    filename = AUDIO_FILES[index]
+    try:
+        # aplay ile çal, stdout/stderr'i sustur
+        subprocess.Popen(
+            ["aplay", filename],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        print(f"Playing: {filename}")
+    except Exception as e:
+        print("Audio play error:", e)
 
 # ---------- CASCADE PATH ----------
 CASCADE_PATH = "/usr/share/opencv4/haarcascades/haarcascade_frontalface_default.xml"
@@ -52,15 +75,15 @@ time.sleep(1)
 DEAD_ZONE_SMALL_X = 35   # merkez civarı, hiç hareket yok
 DEAD_ZONE_LARGE_X = 120  # çok uzakta → büyük adım
 
-DEAD_ZONE_SMALL_Y = 25
-DEAD_ZONE_LARGE_Y = 80
+DEAD_ZONE_SMALL_Y = 18
+DEAD_ZONE_LARGE_Y = 60
 
 # Servo adımları (derece)
-YAW_STEP_SMALL = 1
-YAW_STEP_LARGE = 3
+YAW_STEP_SMALL = 2
+YAW_STEP_LARGE = 5
 
-TILT_STEP_SMALL = 1
-TILT_STEP_LARGE = 3
+TILT_STEP_SMALL = 2
+TILT_STEP_LARGE = 4
 
 # Yüz kaybolunca merkeze dönme ve scan
 NO_FACE_TIMEOUT = 1.5  # yüz yoksa, bu kadar saniye sonra "return to neutral"
@@ -72,7 +95,7 @@ face_centers = deque(maxlen=FACE_SMOOTH_WINDOW)
 
 # Servoları her framede değil, her N framede güncelle
 frame_count = 0
-UPDATE_EVERY = 2
+UPDATE_EVERY = 1
 
 # Scan davranışı
 SCANNING = False
@@ -99,7 +122,7 @@ if not cap.isOpened():
     print("Kamera açılamadı.")
     raise SystemExit
 
-print("Piaget head tracking (track + auto-center + scan) başlıyor. Çıkmak için 'q'.")
+print("Piaget head tracking (track + auto-center + scan + audio) başlıyor. Çıkmak için 'q'.")
 
 while True:
     ret, frame = cap.read()
@@ -107,6 +130,7 @@ while True:
         break
 
     frame_count += 1
+    now = time.time()
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
     # Detection için küçült
@@ -147,7 +171,16 @@ while True:
         cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
         cv2.circle(frame, (avg_x, avg_y), 4, (0, 255, 0), -1)
 
-        last_seen_time = time.time()
+        # Yüz gördük → zamanı güncelle
+        last_seen_time = now
+
+        # 🔊 Ses çalma mantığı:
+        # Yüz daha önce yoktu, şimdi var VE en son konuşmasından 5 sn geçtiyse bir sonraki sesi çal
+        if now - last_greet_time > GREET_COOLDOWN:
+            play_greet(greet_index)
+            last_greet_time = now
+            greet_index = (greet_index + 1) % len(AUDIO_FILES)
+
     else:
         # Yüz yok → buffer temizle
         face_centers.clear()
@@ -156,8 +189,6 @@ while True:
     center_x = WIDTH // 2
     center_y = HEIGHT // 2
     cv2.circle(frame, (center_x, center_y), 4, (0, 0, 255), -1)
-
-    now = time.time()
 
     # ----- SERVO CONTROL -----
     if frame_count % UPDATE_EVERY == 0:
@@ -256,7 +287,7 @@ while True:
 
     # Görüntüyü biraz büyüt
     display = cv2.resize(frame, None, fx=1.5, fy=1.5)
-    cv2.imshow("Piaget Head Tracking (Track + Scan)", display)
+    cv2.imshow("Piaget Head Tracking (Track + Scan + Audio)", display)
 
     if cv2.waitKey(1) & 0xFF == ord("q"):
         break
