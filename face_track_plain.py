@@ -18,17 +18,24 @@ GREET_COOLDOWN = 5.0  # aynı kişiyi sürekli görünce spam yapmasın (saniye)
 last_greet_time = 0.0
 greet_index = 0
 
+import subprocess
+
+AUDIO_FILES = ["piaget_0.wav", "piaget_1.wav", "piaget_2.wav"]
+greet_index = 0
+last_greet_time = 0.0
+GREET_COOLDOWN = 5.0  # saniye
+
 def play_greet(index):
     if index < 0 or index >= len(AUDIO_FILES):
         return
     filename = AUDIO_FILES[index]
     try:
         subprocess.Popen(
-            ["paplay", filename],
+            ["pw-play", filename],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL
         )
-        print(f"Playing (BT): {filename}")
+        print(f"Playing (BT via PipeWire): {filename}")
     except Exception as e:
         print("Audio play error:", e)
 
