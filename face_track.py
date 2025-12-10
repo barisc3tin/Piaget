@@ -10,7 +10,7 @@ DOWNSCALE = 0.5
 
 # ---------- CASCADE PATH ----------
 CASCADE_PATH = "/usr/share/opencv4/haarcascades/haarcascade_frontalface_default.xml"
-# Eğer sende farklı bir klasördeyse burayı değiştir.
+# Gerekirse kendi yolunla değiştir
 
 face_cascade = cv2.CascadeClassifier(CASCADE_PATH)
 if face_cascade.empty():
@@ -19,17 +19,24 @@ if face_cascade.empty():
 # ---------- SERVO SETTINGS ----------
 kit = ServoKit(channels=16)
 
-NECK_YAW_CH = 1    # sağ-sol (YAW)
-NECK_TILT_CH = 0   # yukarı-aşağı (TILT)
+NECK_YAW_CH = 1    # sağ-sol
+NECK_TILT_CH = 0   # yukarı-aşağı
 
-SAFE_MIN_ANGLE = 60
-SAFE_MAX_ANGLE = 120
+# YAW: 90 = sol, 135 = orta, 180 = sağ
+YAW_MIN = 90
+YAW_MAX = 180
+YAW_CENTER = 135
+
+# TILT: varsayılan aralık (gerekirse değiştirebiliriz)
+TILT_MIN = 60
+TILT_MAX = 120
+TILT_CENTER = 90
 
 for ch in [NECK_YAW_CH, NECK_TILT_CH]:
     kit.servo[ch].set_pulse_width_range(500, 2500)
 
-yaw_angle = 90
-tilt_angle = 90
+yaw_angle = YAW_CENTER
+tilt_angle = TILT_CENTER
 
 kit.servo[NECK_YAW_CH].angle = yaw_angle
 kit.servo[NECK_TILT_CH].angle = tilt_angle
@@ -51,7 +58,7 @@ if not cap.isOpened():
     print("Kamera açılamadı.")
     exit()
 
-print("Piaget tracking başlıyor. Çıkmak için 'q'.")
+print("Piaget head tracking başlıyor. Çıkmak için 'q'.")
 
 def clamp(value, lo, hi):
     return max(lo, min(hi, value))
@@ -77,7 +84,6 @@ while True:
         largest = max(faces, key=lambda f: f[2] * f[3])
         (x, y, w, h) = largest
 
-        # Scale back to original frame size
         x = int(x / DOWNSCALE)
         y = int(y / DOWNSCALE)
         w = int(w / DOWNSCALE)
@@ -98,21 +104,21 @@ while True:
     if target_center is not None:
         face_x, face_y = target_center
 
-        error_x = face_x - center_x
-        error_y = face_y - center_y
+        error_x = face_x - center_x   # sağ +, sol -
+        error_y = face_y - center_y   # aşağı +, yukarı -
 
-        # YAW (left-right rotation)
+        # YAW (sağ-sol)
         if abs(error_x) > DEAD_ZONE_X:
-            # Eğer yanlış yöne dönerse, işareti değiştir
-            delta_yaw = clamp(-error_x * YAW_GAIN, -MAX_STEP, MAX_STEP)
-            yaw_angle = clamp(yaw_angle + delta_yaw, SAFE_MIN_ANGLE, SAFE_MAX_ANGLE)
+            # Yönü düzelttik: yüz sağda -> açı artıyor (135 -> 180)
+            delta_yaw = clamp(error_x * YAW_GAIN, -MAX_STEP, MAX_STEP)
+            yaw_angle = clamp(yaw_angle + delta_yaw, YAW_MIN, YAW_MAX)
             kit.servo[NECK_YAW_CH].angle = yaw_angle
 
-        # TILT (up-down movement)
+        # TILT (yukarı-aşağı)
         if abs(error_y) > DEAD_ZONE_Y:
-            # Yine mekanik montaja göre işaret değiştirilebilir
+            # Gerekirse burada da işareti tersine çevirebiliriz
             delta_tilt = clamp(error_y * TILT_GAIN, -MAX_STEP, MAX_STEP)
-            tilt_angle = clamp(tilt_angle + delta_tilt, SAFE_MIN_ANGLE, SAFE_MAX_ANGLE)
+            tilt_angle = clamp(tilt_angle + delta_tilt, TILT_MIN, TILT_MAX)
             kit.servo[NECK_TILT_CH].angle = tilt_angle
 
     display = cv2.resize(frame, None, fx=2.5, fy=2.5)
