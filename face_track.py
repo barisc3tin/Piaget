@@ -2,9 +2,7 @@ import cv2
 import time
 from collections import deque
 from adafruit_servokit import ServoKit
-import subprocess
-import shutil
-import threading
+import subprocess  # audio
 
 # ---------- CAMERA SETTINGS ----------
 CAM_INDEX = 0
@@ -16,17 +14,24 @@ DOWNSCALE = 1
 
 # ---------- AUDIO SETTINGS ----------
 AUDIO_FILES = ["piaget_0.wav", "piaget_1.wav", "piaget_2.wav"]
-GREET_COOLDOWN = 5.0  # aynı kişiyi sürekli görünce spam yapmasın (saniye)
+GREET_COOLDOWN = 5.0  # saniye
 last_greet_time = 0.0
 greet_index = 0
 
-# Uygun player programını otomatik bul (pw-play -> paplay -> aplay)
-PLAYER = None
-for cand in ("pw-play", "paplay", "aplay"):
-    if shutil.which(cand):
-        PLAYER = cand
-        break
-print("Audio player:", PLAYER)
+def play_greet(index):
+    if index < 0 or index >= len(AUDIO_FILES):
+        return
+    filename = AUDIO_FILES[index]
+    try:
+        subprocess.Popen(
+            ["pw-play", filename],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
+        )
+        print(f"Playing (BT via PipeWire): {filename}")
+    except Exception as e:
+        print("Audio play error:", e)
+
 
 # ---------- CASCADE PATH ----------
 CASCADE_PATH = "/usr/share/opencv4/haarcascades/haarcascade_frontalface_default.xml"
@@ -42,7 +47,6 @@ kit = ServoKit(channels=16)
 
 NECK_YAW_CH = 1    # sağ-sol
 NECK_TILT_CH = 0   # yukarı-aşağı
-JAW_CH = 4         # çene
 
 # YAW: 90 = sol, 135 = orta, 180 = sağ
 YAW_MIN = 90
@@ -54,20 +58,14 @@ TILT_MIN = 60
 TILT_MAX = 120
 TILT_CENTER = 90
 
-# JAW: kalibrasyona göre güvenli aralık
-JAW_CLOSED = 20    # ağız kapalı
-JAW_OPEN = 85      # ağız açık
-
-for ch in [NECK_YAW_CH, NECK_TILT_CH, JAW_CH]:
+for ch in [NECK_YAW_CH, NECK_TILT_CH]:
     kit.servo[ch].set_pulse_width_range(500, 2500)
 
 yaw_angle = YAW_CENTER
 tilt_angle = TILT_CENTER
-jaw_angle = JAW_CLOSED
 
 kit.servo[NECK_YAW_CH].angle = yaw_angle
 kit.servo[NECK_TILT_CH].angle = tilt_angle
-kit.servo[JAW_CH].angle = jaw_angle
 time.sleep(1)
 
 # ---------- CONTROL PARAMS (RULE-BASED) ----------
@@ -103,6 +101,19 @@ SCANNING = False
 SCAN_STEP = 1          # scan sırasında yaw adımı (derece)
 scan_direction = 1     # +1 sağa, -1 sola
 
+# ---------- FACE FILTER PARAMS ----------
+# Flamaları / posterleri elemek için ek filtreler
+
+MIN_FACE_SIZE = 40      # minWidth/minHeight (piksel)
+MIN_FACE_AREA = 40 * 40
+MAX_FACE_AREA = int(WIDTH * HEIGHT * 0.4)   # frame'in %40'ından büyükse yüz sayma
+
+MIN_ASPECT = 0.7        # w/h (çok dikdörtgen şeyleri at)
+MAX_ASPECT = 1.4
+
+TOP_IGNORE_RATIO = 0.22  # frame'in üst %22'lik kısmındaki "yüzleri" yok say (flama bandı gibi)
+
+
 # ---------- HELPERS ----------
 
 def clamp(value, lo, hi):
@@ -114,44 +125,6 @@ def step_towards(current, target, max_step):
         return target
     return current + max_step if target > current else current - max_step
 
-def jaw_talk(duration=3.0, interval=0.12):
-    """Çeneyi belirli süre boyunca aç/kapa yap (ayrı thread içinde)."""
-    def _run():
-        end = time.time() + duration
-        state_open = False
-        while time.time() < end:
-            angle = JAW_OPEN if state_open else JAW_CLOSED
-            # her ihtimale karşı clamp
-            safe_angle = clamp(angle, JAW_CLOSED, JAW_OPEN)
-            kit.servo[JAW_CH].angle = safe_angle
-            state_open = not state_open
-            time.sleep(interval)
-        # sonunda çeneyi kapat
-        kit.servo[JAW_CH].angle = JAW_CLOSED
-
-    t = threading.Thread(target=_run, daemon=True)
-    t.start()
-
-def play_greet(index):
-    global greet_index, last_greet_time
-    if PLAYER is None:
-        print("No audio player found (pw-play/paplay/aplay).")
-        return
-    if index < 0 or index >= len(AUDIO_FILES):
-        return
-    filename = AUDIO_FILES[index]
-    try:
-        subprocess.Popen(
-            [PLAYER, filename],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        print(f"Playing ({PLAYER}): {filename}")
-        # Konuşma sırasında çene animasyonu
-        jaw_talk(duration=3.0, interval=0.12)
-    except Exception as e:
-        print("Audio play error:", e)
-
 # ---------- CAMERA ----------
 cap = cv2.VideoCapture(CAM_INDEX)
 cap.set(cv2.CAP_PROP_FRAME_WIDTH, WIDTH)
@@ -161,7 +134,7 @@ if not cap.isOpened():
     print("Kamera açılamadı.")
     raise SystemExit
 
-print("Piaget head tracking (Track + Scan + Audio + Jaw) başlıyor. Çıkmak için 'q'.")
+print("Piaget head tracking (track + auto-center + scan + audio, filtered faces) başlıyor. Çıkmak için 'q'.")
 
 while True:
     ret, frame = cap.read()
@@ -175,12 +148,41 @@ while True:
     # Detection için küçült
     small_gray = cv2.resize(gray, (0, 0), fx=DOWNSCALE, fy=DOWNSCALE)
 
-    faces = face_cascade.detectMultiScale(
+    # --- DAHA SERT HAAR PARAMETRELERİ ---
+    faces_raw = face_cascade.detectMultiScale(
         small_gray,
-        scaleFactor=1.1,
-        minNeighbors=3,
-        minSize=(40, 40)
+        scaleFactor=1.15,   # 1.1'den biraz daha seçici
+        minNeighbors=6,     # 3–5'ten daha yüksek: daha az false positive
+        minSize=(MIN_FACE_SIZE, MIN_FACE_SIZE)
     )
+
+    # --- EK FİLTRELER UYGULA ---
+    faces = []
+    top_ignore_y = int(HEIGHT * TOP_IGNORE_RATIO)
+
+    for (x, y, w, h) in faces_raw:
+        # DOWNSCALE=1 olduğu için gerek yok ama generik kalsın
+        x = int(x / DOWNSCALE)
+        y = int(y / DOWNSCALE)
+        w = int(w / DOWNSCALE)
+        h = int(h / DOWNSCALE)
+
+        area = w * h
+        if area < MIN_FACE_AREA or area > MAX_FACE_AREA:
+            continue
+
+        aspect = w / float(h)
+        if not (MIN_ASPECT <= aspect <= MAX_ASPECT):
+            continue
+
+        cx = x + w // 2
+        cy = y + h // 2
+
+        # Çok yukarıdaki "yüzleri" yok say (duvar bandı/flamalar)
+        if cy < top_ignore_y:
+            continue
+
+        faces.append((x, y, w, h, cx, cy))
 
     target_center = None
 
@@ -188,17 +190,9 @@ while True:
         # FACE FOUND → tracking moduna dön
         SCANNING = False
 
-        # En büyük yüzü seç
+        # En büyük geçerli yüzü seç
         largest = max(faces, key=lambda f: f[2] * f[3])
-        (x, y, w, h) = largest
-
-        x = int(x / DOWNSCALE)
-        y = int(y / DOWNSCALE)
-        w = int(w / DOWNSCALE)
-        h = int(h / DOWNSCALE)
-
-        cx = x + w // 2
-        cy = y + h // 2
+        x, y, w, h, cx, cy = largest
 
         # Yumuşatma buffer’ına ekle
         face_centers.append((cx, cy))
@@ -213,7 +207,7 @@ while True:
         # Yüz gördük → zamanı güncelle
         last_seen_time = now
 
-        # Ses + çene: daha önce konuşmasından bu yana GREET_COOLDOWN geçtiyse
+        # 🔊 Ses çalma mantığı:
         if now - last_greet_time > GREET_COOLDOWN:
             play_greet(greet_index)
             last_greet_time = now
@@ -275,7 +269,7 @@ while True:
 
             if time_since_seen <= NO_FACE_TIMEOUT:
                 # RETURN PHASE: önce nötre yumuşak dön
-                SCANNING = False  # öncelik nötre dönmekte
+                SCANNING = False
                 if abs(yaw_angle - YAW_CENTER) > 0.5:
                     yaw_angle = step_towards(yaw_angle, YAW_CENTER, YAW_STEP_SMALL)
                     yaw_angle = clamp(yaw_angle, YAW_MIN, YAW_MAX)
@@ -325,7 +319,7 @@ while True:
 
     # Görüntüyü biraz büyüt
     display = cv2.resize(frame, None, fx=1.5, fy=1.5)
-    cv2.imshow("Piaget Head Tracking (Track + Scan + Audio + Jaw)", display)
+    cv2.imshow("Piaget Head Tracking (Filtered)", display)
 
     if cv2.waitKey(1) & 0xFF == ord("q"):
         break
