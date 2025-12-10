@@ -1,11 +1,26 @@
 import cv2
+import os
 
-# Haarcascade yüz algılama modeli
-face_cascade = cv2.CascadeClassifier(
-    cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
-)
+def find_haar_cascade():
+    # Muhtemel klasörler
+    candidates = [
+        "/usr/share/opencv4/haarcascades",
+        "/usr/share/opencv/haarcascades",
+    ]
 
-cap = cv2.VideoCapture(0)  # gerekirse 1 veya 2 olur
+    for base in candidates:
+        path = os.path.join(base, "haarcascade_frontalface_default.xml")
+        if os.path.exists(path):
+            print("Using cascade:", path)
+            return path
+
+    raise RuntimeError("haarcascade_frontalface_default.xml not found in known locations")
+
+cascade_path = find_haar_cascade()
+
+face_cascade = cv2.CascadeClassifier(cascade_path)
+
+cap = cv2.VideoCapture(0)  # gerekirse 1 veya 2
 
 if not cap.isOpened():
     print("Kamera açılamadı.")
@@ -26,14 +41,7 @@ while True:
     )
 
     for (x, y, w, h) in faces:
-        # yüz etrafına dikdörtgen çiz
-        cv2.rectangle(
-            frame,
-            (x, y),
-            (x + w, y + h),
-            (0, 255, 0),
-            2
-        )
+        cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
 
     cv2.imshow("Piaget Face Detection", frame)
 
