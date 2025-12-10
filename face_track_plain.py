@@ -2,8 +2,7 @@ import cv2
 import time
 from collections import deque
 from adafruit_servokit import ServoKit
-import subprocess
-import shutil
+import subprocess  # <-- audio için
 
 # ---------- CAMERA SETTINGS ----------
 CAM_INDEX = 0
@@ -19,13 +18,20 @@ GREET_COOLDOWN = 5.0  # aynı kişiyi sürekli görünce spam yapmasın (saniye)
 last_greet_time = 0.0
 greet_index = 0
 
-# Uygun player programını otomatik bul (pw-play -> paplay -> aplay)
-PLAYER = None
-for cand in ("pw-play", "paplay", "aplay"):
-    if shutil.which(cand):
-        PLAYER = cand
-        break
-print("Audio player:", PLAYER)
+def play_greet(index):
+    if index < 0 or index >= len(AUDIO_FILES):
+        return
+    filename = AUDIO_FILES[index]
+    try:
+        subprocess.Popen(
+            ["paplay", filename],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL
+        )
+        print(f"Playing (BT): {filename}")
+    except Exception as e:
+        print("Audio play error:", e)
+
 
 # ---------- CASCADE PATH ----------
 CASCADE_PATH = "/usr/share/opencv4/haarcascades/haarcascade_frontalface_default.xml"
@@ -106,24 +112,6 @@ def step_towards(current, target, max_step):
         return target
     return current + max_step if target > current else current - max_step
 
-def play_greet(index):
-    global greet_index, last_greet_time
-    if PLAYER is None:
-        print("No audio player found (pw-play/paplay/aplay).")
-        return
-    if index < 0 or index >= len(AUDIO_FILES):
-        return
-    filename = AUDIO_FILES[index]
-    try:
-        subprocess.Popen(
-            [PLAYER, filename],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        print(f"Playing ({PLAYER}): {filename}")
-    except Exception as e:
-        print("Audio play error:", e)
-
 # ---------- CAMERA ----------
 cap = cv2.VideoCapture(CAM_INDEX)
 cap.set(cv2.CAP_PROP_FRAME_WIDTH, WIDTH)
@@ -133,7 +121,7 @@ if not cap.isOpened():
     print("Kamera açılamadı.")
     raise SystemExit
 
-print("Piaget head tracking (Track + Scan + Audio, no jaw) başlıyor. Çıkmak için 'q'.")
+print("Piaget head tracking (track + auto-center + scan + audio) başlıyor. Çıkmak için 'q'.")
 
 while True:
     ret, frame = cap.read()
@@ -185,7 +173,8 @@ while True:
         # Yüz gördük → zamanı güncelle
         last_seen_time = now
 
-        # Ses: daha önce konuşmasından bu yana GREET_COOLDOWN geçtiyse
+        # 🔊 Ses çalma mantığı:
+        # Yüz daha önce yoktu, şimdi var VE en son konuşmasından 5 sn geçtiyse bir sonraki sesi çal
         if now - last_greet_time > GREET_COOLDOWN:
             play_greet(greet_index)
             last_greet_time = now
@@ -297,7 +286,7 @@ while True:
 
     # Görüntüyü biraz büyüt
     display = cv2.resize(frame, None, fx=1.5, fy=1.5)
-    cv2.imshow("Piaget Head Tracking (Track + Scan + Audio, no jaw)", display)
+    cv2.imshow("Piaget Head Tracking (Track + Scan + Audio)", display)
 
     if cv2.waitKey(1) & 0xFF == ord("q"):
         break
