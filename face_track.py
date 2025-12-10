@@ -2,7 +2,9 @@ import cv2
 import time
 from collections import deque
 from adafruit_servokit import ServoKit
-import subprocess  # <-- audio için
+import subprocess
+import shutil
+import threading
 
 # ---------- CAMERA SETTINGS ----------
 CAM_INDEX = 0
@@ -18,19 +20,14 @@ GREET_COOLDOWN = 5.0  # aynı kişiyi sürekli görünce spam yapmasın (saniye)
 last_greet_time = 0.0
 greet_index = 0
 
-def play_greet(index):
-    if index < 0 or index >= len(AUDIO_FILES):
-        return
-    filename = AUDIO_FILES[index]
-    try:
-        subprocess.Popen(
-            ["pw-play", filename],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL
-        )
-        print(f"Playing (BT via PipeWire): {filename}")
-    except Exception as e:
-        print("Audio play error:", e)
+# Uygun player programını otomatik bul (pw-play -> paplay -> aplay)
+PLAYER = None
+for cand in ("pw-play", "paplay", "aplay"):
+    if shutil.which(cand):
+        PLAYER = cand
+        break
+print("Audio player:", PLAYER)
+
 # ---------- CASCADE PATH ----------
 CASCADE_PATH = "/usr/share/opencv4/haarcascades/haarcascade_frontalface_default.xml"
 # Gerekirse kendi yolunla değiştir:
@@ -45,6 +42,7 @@ kit = ServoKit(channels=16)
 
 NECK_YAW_CH = 1    # sağ-sol
 NECK_TILT_CH = 0   # yukarı-aşağı
+JAW_CH = 4         # çene
 
 # YAW: 90 = sol, 135 = orta, 180 = sağ
 YAW_MIN = 90
@@ -56,14 +54,20 @@ TILT_MIN = 60
 TILT_MAX = 120
 TILT_CENTER = 90
 
-for ch in [NECK_YAW_CH, NECK_TILT_CH]:
+# JAW: kalibrasyona göre güvenli aralık
+JAW_CLOSED = 20    # ağız kapalı
+JAW_OPEN = 85      # ağız açık
+
+for ch in [NECK_YAW_CH, NECK_TILT_CH, JAW_CH]:
     kit.servo[ch].set_pulse_width_range(500, 2500)
 
 yaw_angle = YAW_CENTER
 tilt_angle = TILT_CENTER
+jaw_angle = JAW_CLOSED
 
 kit.servo[NECK_YAW_CH].angle = yaw_angle
 kit.servo[NECK_TILT_CH].angle = tilt_angle
+kit.servo[JAW_CH].angle = jaw_angle
 time.sleep(1)
 
 # ---------- CONTROL PARAMS (RULE-BASED) ----------
@@ -110,6 +114,44 @@ def step_towards(current, target, max_step):
         return target
     return current + max_step if target > current else current - max_step
 
+def jaw_talk(duration=3.0, interval=0.12):
+    """Çeneyi belirli süre boyunca aç/kapa yap (ayrı thread içinde)."""
+    def _run():
+        end = time.time() + duration
+        state_open = False
+        while time.time() < end:
+            angle = JAW_OPEN if state_open else JAW_CLOSED
+            # her ihtimale karşı clamp
+            safe_angle = clamp(angle, JAW_CLOSED, JAW_OPEN)
+            kit.servo[JAW_CH].angle = safe_angle
+            state_open = not state_open
+            time.sleep(interval)
+        # sonunda çeneyi kapat
+        kit.servo[JAW_CH].angle = JAW_CLOSED
+
+    t = threading.Thread(target=_run, daemon=True)
+    t.start()
+
+def play_greet(index):
+    global greet_index, last_greet_time
+    if PLAYER is None:
+        print("No audio player found (pw-play/paplay/aplay).")
+        return
+    if index < 0 or index >= len(AUDIO_FILES):
+        return
+    filename = AUDIO_FILES[index]
+    try:
+        subprocess.Popen(
+            [PLAYER, filename],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        print(f"Playing ({PLAYER}): {filename}")
+        # Konuşma sırasında çene animasyonu
+        jaw_talk(duration=3.0, interval=0.12)
+    except Exception as e:
+        print("Audio play error:", e)
+
 # ---------- CAMERA ----------
 cap = cv2.VideoCapture(CAM_INDEX)
 cap.set(cv2.CAP_PROP_FRAME_WIDTH, WIDTH)
@@ -119,7 +161,7 @@ if not cap.isOpened():
     print("Kamera açılamadı.")
     raise SystemExit
 
-print("Piaget head tracking (track + auto-center + scan + audio) başlıyor. Çıkmak için 'q'.")
+print("Piaget head tracking (Track + Scan + Audio + Jaw) başlıyor. Çıkmak için 'q'.")
 
 while True:
     ret, frame = cap.read()
@@ -171,8 +213,7 @@ while True:
         # Yüz gördük → zamanı güncelle
         last_seen_time = now
 
-        # 🔊 Ses çalma mantığı:
-        # Yüz daha önce yoktu, şimdi var VE en son konuşmasından 5 sn geçtiyse bir sonraki sesi çal
+        # Ses + çene: daha önce konuşmasından bu yana GREET_COOLDOWN geçtiyse
         if now - last_greet_time > GREET_COOLDOWN:
             play_greet(greet_index)
             last_greet_time = now
@@ -284,7 +325,7 @@ while True:
 
     # Görüntüyü biraz büyüt
     display = cv2.resize(frame, None, fx=1.5, fy=1.5)
-    cv2.imshow("Piaget Head Tracking (Track + Scan + Audio)", display)
+    cv2.imshow("Piaget Head Tracking (Track + Scan + Audio + Jaw)", display)
 
     if cv2.waitKey(1) & 0xFF == ord("q"):
         break
