@@ -4,13 +4,20 @@ from adafruit_servokit import ServoKit
 
 # ---------- CAMERA SETTINGS ----------
 CAM_INDEX = 0
-WIDTH = 320
-HEIGHT = 240
-DOWNSCALE = 0.5
+
+# Daha yüksek çözünürlük
+WIDTH = 640
+HEIGHT = 480
+
+# Detection için küçültme oranı:
+# 1.0 = hiç küçültme yok (daha net, daha yavaş)
+# 0.75 = orta yol
+# 0.5 = çok hızlı, daha zor algılama
+DOWNSCALE = 0.75
 
 # ---------- CASCADE PATH ----------
 CASCADE_PATH = "/usr/share/opencv4/haarcascades/haarcascade_frontalface_default.xml"
-# Gerekirse kendi yolunla değiştir
+# Gerekirse kendi yolunu yaz
 
 face_cascade = cv2.CascadeClassifier(CASCADE_PATH)
 if face_cascade.empty():
@@ -27,7 +34,7 @@ YAW_MIN = 90
 YAW_MAX = 180
 YAW_CENTER = 135
 
-# TILT: varsayılan aralık (gerekirse değiştirebiliriz)
+# TILT: kabaca 60–120 arası güvenli
 TILT_MIN = 60
 TILT_MAX = 120
 TILT_CENTER = 90
@@ -58,7 +65,7 @@ if not cap.isOpened():
     print("Kamera açılamadı.")
     exit()
 
-print("Piaget head tracking başlıyor. Çıkmak için 'q'.")
+print("Piaget head tracking (hi-res) başlıyor. Çıkmak için 'q'.")
 
 def clamp(value, lo, hi):
     return max(lo, min(hi, value))
@@ -69,21 +76,31 @@ while True:
         break
 
     gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-    small_gray = cv2.resize(gray, (0, 0), fx=DOWNSCALE, fy=DOWNSCALE)
 
+    # Detection için küçült
+    small_gray = cv2.resize(
+        gray,
+        (0, 0),
+        fx=DOWNSCALE,
+        fy=DOWNSCALE
+    )
+
+    # --------- DETECTION TUNING ---------
     faces = face_cascade.detectMultiScale(
         small_gray,
-        scaleFactor=1.1,
-        minNeighbors=4,
-        minSize=(40, 40)
+        scaleFactor=1.1,   # 1.05 daha detaylı ama yavaş, 1.2 daha hızlı
+        minNeighbors=3,    # 3 = daha hassas, 5 = daha seçici
+        minSize=(40, 40)   # yüzler küçükse 30,30 yap
     )
 
     target_center = None
 
     if len(faces) > 0:
+        # En büyük yüz
         largest = max(faces, key=lambda f: f[2] * f[3])
         (x, y, w, h) = largest
 
+        # Küçük resimden orijinal boyuta ölçekle
         x = int(x / DOWNSCALE)
         y = int(y / DOWNSCALE)
         w = int(w / DOWNSCALE)
@@ -107,22 +124,21 @@ while True:
         error_x = face_x - center_x   # sağ +, sol -
         error_y = face_y - center_y   # aşağı +, yukarı -
 
-        # YAW (sağ-sol)
+        # YAW
         if abs(error_x) > DEAD_ZONE_X:
-            # Yönü düzelttik: yüz sağda -> açı artıyor (135 -> 180)
             delta_yaw = clamp(error_x * YAW_GAIN, -MAX_STEP, MAX_STEP)
             yaw_angle = clamp(yaw_angle + delta_yaw, YAW_MIN, YAW_MAX)
             kit.servo[NECK_YAW_CH].angle = yaw_angle
 
-        # TILT (yukarı-aşağı)
+        # TILT
         if abs(error_y) > DEAD_ZONE_Y:
-            # Gerekirse burada da işareti tersine çevirebiliriz
             delta_tilt = clamp(error_y * TILT_GAIN, -MAX_STEP, MAX_STEP)
             tilt_angle = clamp(tilt_angle + delta_tilt, TILT_MIN, TILT_MAX)
             kit.servo[NECK_TILT_CH].angle = tilt_angle
 
-    display = cv2.resize(frame, None, fx=2.5, fy=2.5)
-    cv2.imshow("Piaget Head Tracking", display)
+    # Görüntüyü büyüt; sen rahat gör ama işlem yükü değişmesin
+    display = cv2.resize(frame, None, fx=1.5, fy=1.5)
+    cv2.imshow("Piaget Head Tracking (Hi-Res)", display)
 
     if cv2.waitKey(1) & 0xFF == ord("q"):
         break
